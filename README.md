@@ -2,6 +2,9 @@
 Updating weekly dm fadedfade_a on discord if you have issues 
 This is a RAT controlled over Discord with over 20 post exploitation modules.
 
+# https://discord.gg/YQngM65DQz
+
+
 ## **Disclaimer:**
 
 This tool is for educational use only, the author will not be held responsible for any misuse of this tool.
