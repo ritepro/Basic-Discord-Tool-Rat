@@ -24,3 +24,4 @@ win10toast
 yarl
 pyinstaller
 fade
+GPUtil
